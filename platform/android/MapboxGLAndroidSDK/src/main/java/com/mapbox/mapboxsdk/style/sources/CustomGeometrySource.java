@@ -19,7 +19,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -29,7 +30,6 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * Custom Vector Source, allows using FeatureCollections.
  */
-@UiThread
 public class CustomGeometrySource extends Source {
   public static final String THREAD_PREFIX = "CustomGeom";
   public static final int THREAD_POOL_LIMIT = 4;
@@ -38,6 +38,7 @@ public class CustomGeometrySource extends Source {
   private ExecutorService executor;
   private GeometryTileProvider provider;
   private final Map<TileID, AtomicBoolean> cancelledTileRequests = new ConcurrentHashMap<>();
+  private final GeometryTileRequestsQueue queue = new GeometryTileRequestsQueue();
 
   /**
    * Create a CustomGeometrySource
@@ -45,6 +46,7 @@ public class CustomGeometrySource extends Source {
    * @param id       The source id.
    * @param provider The tile provider that returns geometry data for this source.
    */
+  @UiThread
   public CustomGeometrySource(String id, GeometryTileProvider provider) {
     this(id, provider, new CustomGeometrySourceOptions());
   }
@@ -57,6 +59,7 @@ public class CustomGeometrySource extends Source {
    * @param provider The tile provider that returns geometry data for this source.
    * @param options  CustomGeometrySourceOptions.
    */
+  @UiThread
   public CustomGeometrySource(String id, GeometryTileProvider provider, CustomGeometrySourceOptions options) {
     super();
     this.provider = provider;
@@ -71,7 +74,6 @@ public class CustomGeometrySource extends Source {
    * @param bounds The region in which features should be invalidated at all zoom levels
    */
   public void invalidateRegion(LatLngBounds bounds) {
-    checkThread();
     nativeInvalidateBounds(bounds);
   }
 
@@ -84,7 +86,6 @@ public class CustomGeometrySource extends Source {
    * @param y         Tile Y coordinate.
    */
   public void invalidateTile(int zoomLevel, int x, int y) {
-    checkThread();
     nativeInvalidateTile(zoomLevel, x, y);
   }
 
@@ -99,7 +100,6 @@ public class CustomGeometrySource extends Source {
    * @param data      Feature collection for the tile.
    */
   public void setTileData(int zoomLevel, int x, int y, FeatureCollection data) {
-    checkThread();
     nativeSetTileData(zoomLevel, x, y, data);
   }
 
@@ -146,7 +146,8 @@ public class CustomGeometrySource extends Source {
     AtomicBoolean cancelFlag = new AtomicBoolean(false);
     TileID tileID = new TileID(z, x, y);
     cancelledTileRequests.put(tileID, cancelFlag);
-    GeometryTileRequest request = new GeometryTileRequest(tileID, provider, this, cancelFlag);
+    GeometryTileRequest request =
+      new GeometryTileRequest(tileID, provider, queue, cancelledTileRequests, this, cancelFlag);
 
     executorLock.lock();
     try {
@@ -202,11 +203,17 @@ public class CustomGeometrySource extends Source {
   }
 
   private static class TileID {
+  @Keep
+  private void requestProcessed(int z, int x, int y) {
+    queue.requestProcessed(new TileID(z, x, y));
+  }
+
+  static class TileID {
     public int z;
     public int x;
     public int y;
 
-    public TileID(int _z, int _x, int _y) {
+    TileID(int _z, int _x, int _y) {
       z = _z;
       x = _x;
       y = _y;
@@ -233,22 +240,28 @@ public class CustomGeometrySource extends Source {
     }
   }
 
-  private static class GeometryTileRequest implements Runnable {
-    private TileID id;
-    private GeometryTileProvider provider;
-    private WeakReference<CustomGeometrySource> sourceRef;
-    private AtomicBoolean cancelled;
+  static class GeometryTileRequest implements Runnable {
+    private final TileID id;
+    private final GeometryTileProvider provider;
+    private final GeometryTileRequestsQueue queue;
+    private final Map<TileID, AtomicBoolean> requestMap;
+    private final WeakReference<CustomGeometrySource> sourceRef;
+    private final AtomicBoolean cancelled;
 
-    public GeometryTileRequest(TileID _id, GeometryTileProvider p,
-                               CustomGeometrySource _source, AtomicBoolean _cancelled) {
+    GeometryTileRequest(TileID _id, GeometryTileProvider p, GeometryTileRequestsQueue q,
+                        Map<TileID, AtomicBoolean> m,
+                        CustomGeometrySource _source, AtomicBoolean _cancelled) {
       id = _id;
       provider = p;
+      queue = q;
+      requestMap = m;
       sourceRef = new WeakReference<>(_source);
       cancelled = _cancelled;
     }
 
     public void run() {
       if (isCancelled()) {
+        onCancelled();
         return;
       }
 
@@ -256,11 +269,22 @@ public class CustomGeometrySource extends Source {
       CustomGeometrySource source = sourceRef.get();
       if (!isCancelled() && source != null && data != null) {
         source.setTileData(id, data);
+      } else {
+        onCancelled();
       }
     }
 
-    private Boolean isCancelled() {
+    private void onCancelled() {
+      requestMap.remove(id);
+      queue.requestProcessed(id);
+    }
+
+    Boolean isCancelled() {
       return cancelled.get();
+    }
+
+    TileID getId() {
+      return id;
     }
   }
 }
