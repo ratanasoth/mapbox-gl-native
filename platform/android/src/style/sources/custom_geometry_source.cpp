@@ -102,17 +102,17 @@ namespace android {
         peer.Call(*_env, releaseThreads);
     };
 
-    void CustomGeometrySource::requestProcessed(jni::jint z,
-                                             jni::jint x,
-                                             jni::jint y) {
+    bool CustomGeometrySource::isCancelled(jni::jint z,
+                                                jni::jint x,
+                                                jni::jint y) {
         android::UniqueEnv _env = android::AttachEnv();
 
-        static auto requestProcessed = javaClass.GetMethod<void (jni::jint, jni::jint, jni::jint)>(*_env, "requestProcessed");
+        static auto isCancelled = javaClass.GetMethod<jboolean (jni::jint, jni::jint, jni::jint)>(*_env, "isCancelled");
 
         assert(javaPeer);
 
         auto peer = jni::Cast(*_env, *javaPeer, javaClass);
-        peer.Call(*_env, requestProcessed, z, x, y);
+        return peer.Call(*_env, isCancelled, z, x, y);
     };
 
     void CustomGeometrySource::setTileData(jni::JNIEnv& env,
@@ -125,10 +125,10 @@ namespace android {
         // Convert the jni object
         auto geometry = geojson::FeatureCollection::convert(env, jFeatures);
 
-        // Update the core source
-        source.as<mbgl::style::CustomGeometrySource>()->CustomGeometrySource::setTileData(CanonicalTileID(z, x, y), GeoJSON(geometry));
-
-        requestProcessed(z, x, y);
+        // Update the core source if not cancelled
+        if (!isCancelled(z, x ,y)) {
+            source.as<mbgl::style::CustomGeometrySource>()->CustomGeometrySource::setTileData(CanonicalTileID(z, x, y), GeoJSON(geometry));
+        }
     }
 
     void CustomGeometrySource::invalidateTile(jni::JNIEnv&, jni::jint z, jni::jint x, jni::jint y) {
