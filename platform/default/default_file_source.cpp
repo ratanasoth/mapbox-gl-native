@@ -63,6 +63,16 @@ public:
         }
     }
 
+    void mergeOfflineRegions(const std::string& sideDatabasePath,
+                            std::function<void (std::exception_ptr,
+                                                optional<std::vector<OfflineRegion>>)> callback) {
+        try {
+            callback({}, offlineDatabase->mergeDatabase(sideDatabasePath));
+        } catch (...) {
+            callback(std::current_exception(), {});
+        }
+     }
+
     void updateMetadata(const int64_t regionID,
                       const OfflineRegionMetadata& metadata,
                       std::function<void (std::exception_ptr, optional<OfflineRegionMetadata>)> callback) {
@@ -264,6 +274,12 @@ void DefaultFileSource::createOfflineRegion(const OfflineRegionDefinition& defin
                                             const OfflineRegionMetadata& metadata,
                                             std::function<void (std::exception_ptr, optional<OfflineRegion>)> callback) {
     impl->actor().invoke(&Impl::createRegion, definition, metadata, callback);
+}
+
+void DefaultFileSource::mergeOfflineRegions(const std::string& sideDatabasePath,
+                                            std::function<void (std::exception_ptr,
+                                                optional<std::vector<OfflineRegion>>)> callback) {
+    impl->actor().invoke(&Impl::mergeOfflineRegions, sideDatabasePath, callback);
 }
 
 void DefaultFileSource::updateOfflineMetadata(const int64_t regionID,

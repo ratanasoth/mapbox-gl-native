@@ -101,6 +101,24 @@ public:
                                                                     optional<OfflineRegionStatus>)>) const;
 
     /*
+     * Merge offline regions from a secondary database into the main offline database.
+     *
+     * When the database merge is completed, the provided callback will be
+     * executed on the database thread; it is the responsibility of the SDK bindings
+     * to re-execute a user-provided callback on the main thread.
+     *
+     * Only resources and tiles that belong to a region will be copied over. Identical
+     * regions will be flattened into a single new region in the main database.
+     *
+     * Note that the resulting new regions may not be in a completed status if the
+     * secondary database does not contain all the tiles or resources required by the
+     * region definition.
+     */
+    void mergeOfflineRegions(const std::string& sideDatabasePath,
+                            std::function<void (std::exception_ptr,
+                                                optional<std::vector<OfflineRegion>>)>);
+
+    /*
      * Remove an offline region from the database and perform any resources evictions
      * necessary as a result.
      *
