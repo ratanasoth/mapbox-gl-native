@@ -6,6 +6,7 @@
 
 * Token string syntax (`"{token}"`) in `MGLSymbolStyleLayer` `text` and `iconImageName` properties is now correctly converted to the appropriate `NSExpression` equivalent. ([#11659](https://github.com/mapbox/mapbox-gl-native/issues/11659))
 * Fixed a crash when switching between two styles having layers with the same identifier but different layer types. ([#12432](https://github.com/mapbox/mapbox-gl-native/issues/12432))
+* Added a `MGLShapeSourceOptionLineDistanceMetrics` property that enables or disables calculating line distance metrics.
 
 # 0.9.0 - July 18, 2018
 

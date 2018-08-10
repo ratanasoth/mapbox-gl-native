@@ -7,6 +7,7 @@ Mapbox welcomes participation and contributions from everyone. Please read [CONT
 ### Styles and rendering
 
 * Added an `MGLMapView.preferredFramesPerSecond` property that controls the rate at which the map view is rendered. The default rate now adapts to device capabilities to provide a smoother experience. ([#12501](https://github.com/mapbox/mapbox-gl-native/issues/12501))
+* Added a `MGLShapeSourceOptionLineDistanceMetrics` property that enables or disables calculating line distance metrics.
 
 ### Other changes
 
