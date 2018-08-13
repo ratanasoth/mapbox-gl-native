@@ -47,7 +47,7 @@ public:
     OfflineRegion createRegion(const OfflineRegionDefinition&,
                                const OfflineRegionMetadata&);
 
-    optional<std::vector<OfflineRegion>> mergeDatabase(const std::string& sideDatabasePath);
+    std::vector<OfflineRegion> mergeDatabase(const std::string& sideDatabasePath);
     OfflineRegionMetadata updateMetadata(const int64_t regionID, const OfflineRegionMetadata&);
 
     void deleteRegion(OfflineRegion&&);
