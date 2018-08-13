@@ -15,14 +15,13 @@ import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
@@ -30,6 +29,10 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Custom Vector Source, allows using FeatureCollections.
+ * <p>
+ * CustomGeometrySource uses a coalescing model for frequent data updates targeting the same tile id,
+ * which means, that the in-progress request as well as the last scheduled request are guaranteed to finish.
+ * Any requests scheduled meanwhile can be canceled.
  */
 public class CustomGeometrySource extends Source {
   public static final String THREAD_PREFIX = "CustomGeom";
@@ -38,7 +41,13 @@ public class CustomGeometrySource extends Source {
   private final Lock executorLock = new ReentrantLock();
   private ThreadPoolExecutor executor;
   private GeometryTileProvider provider;
-  private final Map<TileID, LinkedList<GeometryTileRequest>> overlappingTasksMap = new HashMap<>();
+  private final Map<TileID, GeometryTileRequest> awaitingTasksMap = new HashMap<>();
+
+  /**
+   * A map containing in-progress requests targeting distinct tiles.
+   * A request is considered in-progress when it's started by the ThreadPoolExecutor.
+   * A request is marked as done when the data is passed from the JNI layer to the core, after the features conversion.
+   */
   private final Map<TileID, AtomicBoolean> inProgressTasksMap = new HashMap<>();
 
   /**
@@ -142,9 +151,11 @@ public class CustomGeometrySource extends Source {
 
   /**
    * Tile data request can come from a number of different threads.
-   * To remove race condition for requests targeting the same tile id we are first checking if there is already a queue
-   * of requests for that tile id (might be empty if the request is being processed),
-   * if not, we are pushing the request straight to the executor.
+   * To remove race condition for requests targeting the same tile id we are first checking if there is a request
+   * already enqueued, if yes, we are replacing it.
+   * Otherwise, we are checking if there is an in-progress request, if yes,
+   * we are creating or replacing an awaiting request.
+   * If none of the above, we are enqueueing the request.
    */
   @WorkerThread
   @Keep
@@ -152,51 +163,58 @@ public class CustomGeometrySource extends Source {
     AtomicBoolean cancelFlag = new AtomicBoolean(false);
     TileID tileID = new TileID(z, x, y);
     GeometryTileRequest request =
-      new GeometryTileRequest(tileID, provider, overlappingTasksMap, inProgressTasksMap, this, cancelFlag);
+      new GeometryTileRequest(tileID, provider, awaitingTasksMap, inProgressTasksMap, this, cancelFlag);
 
-    synchronized (overlappingTasksMap) {
-      LinkedList<GeometryTileRequest> queue = overlappingTasksMap.get(tileID);
-      if (queue != null) {
-        queue.offer(request);
-      } else {
-        executorLock.lock();
-        try {
-          if (executor != null && !executor.isShutdown()) {
-            executor.execute(request);
-          }
-        } finally {
-          executorLock.unlock();
+    synchronized (awaitingTasksMap) {
+      synchronized (inProgressTasksMap) {
+        if (executor.getQueue().contains(request)) {
+          executor.remove(request);
+          executeRequest(request);
+        } else if (inProgressTasksMap.containsKey(tileID)) {
+          awaitingTasksMap.put(tileID, request);
+        } else {
+          executeRequest(request);
         }
       }
     }
   }
 
+  private void executeRequest(GeometryTileRequest request) {
+    executorLock.lock();
+    try {
+      if (executor != null && !executor.isShutdown()) {
+        executor.execute(request);
+      }
+    } finally {
+      executorLock.unlock();
+    }
+  }
+
   /**
-   * We want to cancel only the oldest request, therefore we are first checking if it's in progress,
-   * if not, we are searching for any request in the executor's queue,
-   * if not, we are looking for requests in the additional queue of requests targeting this tile id.
+   * We want to cancel only the oldest request, therefore, we are first checking if it's in progress,
+   * if not or if the currently in progress request has already been canceled,
+   * we are searching for any request in the executor's queue.
+   * Otherwise, we are removing an awaiting request targeting this tile id.
    * <p>
    * {@link GeometryTileRequest#equals(Object)} is overridden to cover only the tile id,
-   * therefore, we can use and empty request to search the queues.
+   * therefore, we can use an empty request to search the executor's queue.
    */
   @WorkerThread
   @Keep
   private void cancelTile(int z, int x, int y) {
     TileID tileID = new TileID(z, x, y);
 
-    synchronized (overlappingTasksMap) {
+    synchronized (awaitingTasksMap) {
       synchronized (inProgressTasksMap) {
         AtomicBoolean cancelFlag = inProgressTasksMap.get(tileID);
-        if (cancelFlag != null) {
-          cancelFlag.compareAndSet(false, true);
-        } else {
+        // check if there is an in progress task
+        if (!(cancelFlag != null && cancelFlag.compareAndSet(false, true))) {
+          // if there is no tasks in progress or the in progress task was already cancelled, check the executor's queue
           GeometryTileRequest emptyRequest =
             new GeometryTileRequest(tileID, null, null, null, null, null);
           if (!executor.getQueue().remove(emptyRequest)) {
-            LinkedList<GeometryTileRequest> queue = overlappingTasksMap.get(tileID);
-            if (queue != null) {
-              queue.remove(emptyRequest);
-            }
+            // if there was no tasks in queue, remove from the awaiting map
+            awaitingTasksMap.remove(tileID);
           }
         }
       }
@@ -212,17 +230,18 @@ public class CustomGeometrySource extends Source {
       }
 
       executor = new ThreadPoolExecutor(THREAD_POOL_LIMIT, THREAD_POOL_LIMIT,
-        0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), new ThreadFactory() {
-        final AtomicInteger threadCount = new AtomicInteger();
-        final int poolId = poolCount.getAndIncrement();
+        0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(),
+        new ThreadFactory() {
+          final AtomicInteger threadCount = new AtomicInteger();
+          final int poolId = poolCount.getAndIncrement();
 
-        @Override
-        public Thread newThread(@NonNull Runnable runnable) {
-          return new Thread(
-            runnable,
-            String.format(Locale.US, "%s-%d-%d", THREAD_PREFIX, poolId, threadCount.getAndIncrement()));
-        }
-      });
+          @Override
+          public Thread newThread(@NonNull Runnable runnable) {
+            return new Thread(
+              runnable,
+              String.format(Locale.US, "%s-%d-%d", THREAD_PREFIX, poolId, threadCount.getAndIncrement()));
+          }
+        });
     } finally {
       executorLock.unlock();
     }
@@ -278,36 +297,36 @@ public class CustomGeometrySource extends Source {
   static class GeometryTileRequest implements Runnable {
     private final TileID id;
     private final GeometryTileProvider provider;
-    private final Map<TileID, LinkedList<GeometryTileRequest>> overlapping;
+    private final Map<TileID, GeometryTileRequest> awaiting;
     private final Map<TileID, AtomicBoolean> inProgress;
     private final WeakReference<CustomGeometrySource> sourceRef;
     private final AtomicBoolean cancelled;
 
     GeometryTileRequest(TileID _id, GeometryTileProvider p,
-                        Map<TileID, LinkedList<GeometryTileRequest>> overlapping,
+                        Map<TileID, GeometryTileRequest> awaiting,
                         Map<TileID, AtomicBoolean> m,
                         CustomGeometrySource _source, AtomicBoolean _cancelled) {
       id = _id;
       provider = p;
-      this.overlapping = overlapping;
+      this.awaiting = awaiting;
       inProgress = m;
       sourceRef = new WeakReference<>(_source);
       cancelled = _cancelled;
     }
 
     public void run() {
-      synchronized (overlapping) {
+      synchronized (awaiting) {
         synchronized (inProgress) {
-          if (overlapping.get(id) == null) {
-            overlapping.put(id, new LinkedList<>());
-          }
-
-          if (inProgress.put(id, cancelled) != null) {
+          if (inProgress.containsKey(id)) {
             // request targeting this tile id is already being processed,
             // scenario that should occur only if the tile is being requested when
-            // another request is switching threads to execute or is in executor's queue
-            overlapping.get(id).offer(this);
+            // another request is switching threads to execute
+            if (!awaiting.containsKey(id)) {
+              awaiting.put(id, this);
+            }
             return;
+          } else {
+            inProgress.put(id, cancelled);
           }
         }
       }
@@ -320,20 +339,19 @@ public class CustomGeometrySource extends Source {
         }
       }
 
-      synchronized (overlapping) {
+      synchronized (awaiting) {
         synchronized (inProgress) {
           inProgress.remove(id);
-          // executing the next request targeting the same tile or cleaning up if none waiting
-          GeometryTileRequest queuedRequest = overlapping.get(id).poll();
-          CustomGeometrySource source = sourceRef.get();
-          if (source != null && queuedRequest != null) {
-            source.executor.execute(queuedRequest);
-          }
 
-          // if there are no more requests waiting,
-          // remove the queue in case the last request is cancelled in the executor's queue
-          if (overlapping.get(id).size() == 0) {
-            overlapping.remove(id);
+          // executing the next request targeting the same tile
+          if (awaiting.containsKey(id)) {
+            GeometryTileRequest queuedRequest = awaiting.get(id);
+            CustomGeometrySource source = sourceRef.get();
+            if (source != null && queuedRequest != null) {
+              source.executor.execute(queuedRequest);
+            }
+
+            awaiting.remove(id);
           }
         }
       }
