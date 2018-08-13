@@ -89,4 +89,11 @@ public class GeoJsonOptions extends HashMap<String, Object> {
     return this;
   }
 
+  /**
+   *
+   */
+  public GeoJsonOptions withLineMetrics(boolean lineMetrics) {
+    this.put("lineMetrics", lineMetrics);
+    return this;
+  }
 }
