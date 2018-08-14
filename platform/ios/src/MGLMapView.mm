@@ -4125,6 +4125,11 @@ public:
                 return true;
             }
             
+            if ([self.delegate respondsToSelector:@selector(mapView:canSelectAnnotation:)] &&
+                ![self.delegate mapView:self canSelectAnnotation:annotation]) {
+                return true;
+            }
+            
             MGLAnnotationContext annotationContext = _annotationContextsByAnnotationTag.at(annotationTag);
             CGRect annotationRect;
             
