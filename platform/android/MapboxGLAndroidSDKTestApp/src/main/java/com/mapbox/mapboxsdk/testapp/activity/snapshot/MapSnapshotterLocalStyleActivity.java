@@ -38,7 +38,7 @@ public class MapSnapshotterLocalStyleActivity extends AppCompatActivity
 
           String styleJson;
           try {
-            styleJson = ResourceUtils.readRawResource(MapSnapshotterLocalStyleActivity.this, R.raw.sat_style);
+            styleJson = ResourceUtils.readRawResource(MapSnapshotterLocalStyleActivity.this, R.raw.gradient_style);
           } catch (IOException exception) {
             throw new RuntimeException(exception);
           }
@@ -49,7 +49,7 @@ public class MapSnapshotterLocalStyleActivity extends AppCompatActivity
             new MapSnapshotter
               .Options(Math.min(container.getMeasuredWidth(), 1024), Math.min(container.getMeasuredHeight(), 1024))
               .withStyleJson(styleJson)
-              .withCameraPosition(new CameraPosition.Builder().target(new LatLng(52.090737, 5.121420)).zoom(18).build())
+              .withCameraPosition(new CameraPosition.Builder().target(new LatLng()).zoom(2).build())
           );
           mapSnapshotter.start(MapSnapshotterLocalStyleActivity.this, error -> Timber.e(error));
         }
