@@ -8,7 +8,7 @@ Mapbox welcomes participation and contributions from everyone. Please read [CONT
 * When a symbol in an `MGLSymbolStyleLayer` has both an icon and text, both are shown or hidden together based on available space. ([#12521](https://github.com/mapbox/mapbox-gl-native/pull/12521))
 * The `-[MGLMapView visibleFeaturesAtPoint:]` method can now return features near tile boundaries at high zoom levels. ([#12570](https://github.com/mapbox/mapbox-gl-native/pull/12570))
 * Fixed inconsistencies in exception naming. ([#12583](https://github.com/mapbox/mapbox-gl-native/issues/12583))
-* `-[MGLMapViewDelegate mapView:canSelectAnnotation:]` can now specify if an annotation is selectable. ([#12352](https://github.com/mapbox/mapbox-gl-native/pull/12352))
+* Added an -[MGLMapViewDelegate mapView:shapeAnnotationIsEnabled:] method to specify whether an annotation is selectable. ([#12352](https://github.com/mapbox/mapbox-gl-native/pull/12352))
 
 ## 4.3.0 - August 15, 2018
 
